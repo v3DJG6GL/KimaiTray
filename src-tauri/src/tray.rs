@@ -624,6 +624,10 @@ fn draw_clock(color: Rgb, radius: f64) -> Vec<u8> {
 }
 
 static LAST_POPUP_HIDE: AtomicU64 = AtomicU64::new(0);
+#[cfg(target_os = "linux")]
+static POPUP_FOCUS_GENERATION: AtomicU64 = AtomicU64::new(0);
+#[cfg(target_os = "linux")]
+static LAST_POPUP_RESIZE: AtomicU64 = AtomicU64::new(0);
 // 0 = popup, 1 = nothing
 static TRAY_LEFT_ACTION: AtomicU8 = AtomicU8::new(0);
 // 0 = menu, 1 = popup
@@ -784,12 +788,89 @@ fn now_ms() -> u64 {
         .as_millis() as u64
 }
 
-pub fn on_popup_blur(window: &tauri::Window) {
+#[cfg(target_os = "linux")]
+#[derive(Debug, PartialEq)]
+enum PopupBlurAction {
+    KeepOpen,
+    Wait,
+    Hide,
+}
+
+#[cfg(target_os = "linux")]
+fn popup_blur_action(focused: bool, pointer_down: bool, since_resize_ms: u64) -> PopupBlurAction {
+    if focused {
+        PopupBlurAction::KeepOpen
+    } else if pointer_down || since_resize_ms < 250 {
+        PopupBlurAction::Wait
+    } else {
+        PopupBlurAction::Hide
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub fn on_popup_resize() {
+    LAST_POPUP_RESIZE.store(now_ms(), Ordering::SeqCst);
+}
+
+pub fn on_popup_focus_changed(window: &tauri::Window, focused: bool) {
+    #[cfg(target_os = "linux")]
+    let generation = POPUP_FOCUS_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
+    if focused {
+        return;
+    }
     if DISPLAY_MODE.load(Ordering::SeqCst) == 1 {
         return;
     }
-    LAST_POPUP_HIDE.store(now_ms(), Ordering::SeqCst);
-    let _ = window.hide();
+    #[cfg(target_os = "linux")]
+    {
+        // GTK reports temporary focus loss during compositor resize operations
+        // and pointer grabs. Wait for the interaction to finish, then check the
+        // native focus state instead of dismissing the popup mid-drag.
+        let Ok(native) = window.gtk_window() else {
+            return;
+        };
+        let window = window.clone();
+        glib::timeout_add_local(Duration::from_millis(100), move || {
+            if POPUP_FOCUS_GENERATION.load(Ordering::SeqCst) != generation
+                || is_detached()
+                || !native.is_visible()
+            {
+                return glib::ControlFlow::Break;
+            }
+            let pointer_down = native.window().is_some_and(|surface| {
+                surface
+                    .display()
+                    .default_seat()
+                    .and_then(|seat| seat.pointer())
+                    .is_some_and(|pointer| {
+                        let (_, _, _, modifiers) = surface.device_position(&pointer);
+                        modifiers.intersects(
+                            gdk::ModifierType::BUTTON1_MASK
+                                | gdk::ModifierType::BUTTON2_MASK
+                                | gdk::ModifierType::BUTTON3_MASK,
+                        )
+                    })
+            });
+            match popup_blur_action(
+                native.is_active() || native.has_toplevel_focus(),
+                pointer_down,
+                now_ms().saturating_sub(LAST_POPUP_RESIZE.load(Ordering::SeqCst)),
+            ) {
+                PopupBlurAction::KeepOpen => glib::ControlFlow::Break,
+                PopupBlurAction::Wait => glib::ControlFlow::Continue,
+                PopupBlurAction::Hide => {
+                    LAST_POPUP_HIDE.store(now_ms(), Ordering::SeqCst);
+                    let _ = window.hide();
+                    glib::ControlFlow::Break
+                }
+            }
+        });
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        LAST_POPUP_HIDE.store(now_ms(), Ordering::SeqCst);
+        let _ = window.hide();
+    }
 }
 
 pub fn is_detached() -> bool {
@@ -1156,6 +1237,22 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     use super::desktop_name_needs_appindicator;
+
+    #[cfg(target_os = "linux")]
+    use super::{popup_blur_action, PopupBlurAction};
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn popup_survives_transient_focus_loss_during_pointer_and_resize_grabs() {
+        assert_eq!(
+            popup_blur_action(true, false, 1_000),
+            PopupBlurAction::KeepOpen
+        );
+        assert_eq!(popup_blur_action(false, true, 1_000), PopupBlurAction::Wait);
+        assert_eq!(popup_blur_action(false, false, 0), PopupBlurAction::Wait);
+        assert_eq!(popup_blur_action(false, false, 249), PopupBlurAction::Wait);
+        assert_eq!(popup_blur_action(false, false, 250), PopupBlurAction::Hide);
+    }
 
     #[cfg(target_os = "linux")]
     #[test]
