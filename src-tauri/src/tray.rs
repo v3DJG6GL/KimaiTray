@@ -707,19 +707,25 @@ pub fn platform_tray_backend() -> &'static str {
 
 #[cfg(target_os = "linux")]
 fn desktop_needs_appindicator() -> bool {
-    if let Ok(backend) = std::env::var("KIMAITRAY_TRAY_BACKEND") {
-        return backend.eq_ignore_ascii_case("appindicator");
-    }
+    let backend = std::env::var("KIMAITRAY_TRAY_BACKEND").ok();
     let desktop = std::env::var("XDG_CURRENT_DESKTOP")
         .or_else(|_| std::env::var("XDG_SESSION_DESKTOP"))
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    desktop_name_needs_appindicator(&desktop)
+        .unwrap_or_default();
+    linux_needs_appindicator(backend.as_deref(), &desktop, crate::platform::is_wayland())
 }
 
 #[cfg(target_os = "linux")]
-fn desktop_name_needs_appindicator(desktop: &str) -> bool {
-    ["gnome", "ubuntu", "unity", "pantheon", "budgie", "sway"]
+fn linux_needs_appindicator(backend: Option<&str>, desktop: &str, is_wayland: bool) -> bool {
+    if let Some(backend) = backend {
+        return backend.eq_ignore_ascii_case("appindicator");
+    }
+    // GtkStatusIcon uses XEmbed and cannot create a native Wayland tray icon.
+    // Plasma uses StatusNotifierItem (provided by AppIndicator) on X11 too.
+    let desktop = desktop.to_ascii_lowercase();
+    is_wayland
+        || [
+            "gnome", "ubuntu", "unity", "pantheon", "budgie", "sway", "kde", "plasma",
+        ]
         .iter()
         .any(|name| desktop.contains(name))
 }
@@ -1155,17 +1161,56 @@ mod tests {
     use super::{parse_hex_color, tray_label_title, validate_popup_geometry, validate_text};
 
     #[cfg(target_os = "linux")]
-    use super::desktop_name_needs_appindicator;
+    use super::linux_needs_appindicator;
 
     #[cfg(target_os = "linux")]
     #[test]
     fn selects_tray_backend_for_common_linux_desktops() {
-        assert!(desktop_name_needs_appindicator("ubuntu:gnome"));
-        assert!(desktop_name_needs_appindicator("gnome"));
-        assert!(desktop_name_needs_appindicator("budgie:gnome"));
-        assert!(!desktop_name_needs_appindicator("x-cinnamon"));
-        assert!(!desktop_name_needs_appindicator("xfce"));
-        assert!(!desktop_name_needs_appindicator("mate"));
+        for desktop in [
+            "ubuntu:GNOME",
+            "GNOME",
+            "budgie:gnome",
+            "Unity",
+            "Pantheon",
+            "sway",
+        ] {
+            assert!(linux_needs_appindicator(None, desktop, false), "{desktop}");
+        }
+        for desktop in ["X-Cinnamon", "XFCE", "MATE"] {
+            assert!(!linux_needs_appindicator(None, desktop, false), "{desktop}");
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn plasma_uses_appindicator_on_x11_and_wayland() {
+        for desktop in ["KDE", "kde", "Plasma", "plasmawayland", "KDE:Plasma"] {
+            for is_wayland in [false, true] {
+                assert!(
+                    linux_needs_appindicator(None, desktop, is_wayland),
+                    "{desktop}"
+                );
+            }
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn wayland_never_defaults_to_xembed() {
+        for desktop in ["", "unknown", "X-Cinnamon", "XFCE", "MATE"] {
+            assert!(linux_needs_appindicator(None, desktop, true), "{desktop}");
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn explicit_tray_backend_overrides_desktop_and_session_detection() {
+        assert!(linux_needs_appindicator(
+            Some("AppIndicator"),
+            "XFCE",
+            false
+        ));
+        assert!(!linux_needs_appindicator(Some("legacy-gtk"), "KDE", true));
     }
 
     #[test]
@@ -1870,7 +1915,11 @@ fn create_tauri_tray(app: &AppHandle) -> tauri::Result<()> {
     #[cfg(target_os = "linux")]
     attach_appindicator_popup_activation(app)?;
 
-    // If right-click is configured to show popup, remove the attached menu
+    // AppIndicator needs its menu even when a saved click action requests the
+    // popup: the menu is also the Linux activation bridge.
+    #[cfg(target_os = "linux")]
+    let _ = right_action_popup;
+    #[cfg(not(target_os = "linux"))]
     if right_action_popup {
         if let Some(tray) = app.tray_by_id("main") {
             let _ = tray.set_menu(None::<Menu<tauri::Wry>>);
@@ -1907,6 +1956,18 @@ fn attach_appindicator_popup_activation(app: &AppHandle) -> tauri::Result<()> {
         }
 
         let menu: gtk::Menu = unsafe { from_glib_none(menu_ptr) };
+        // Plasma sends SecondaryActivate for a middle click. AppIndicator
+        // forwards it to this visible menu item, so reuse Show/Hide without
+        // relying on Tauri's unsupported Linux tray mouse events. The attached
+        // menu owns the target for as long as the indicator is alive.
+        if let Some(toggle_item) = menu.children().first() {
+            unsafe {
+                libappindicator_sys::app_indicator_set_secondary_activate_target(
+                    raw,
+                    toggle_item.to_glib_none().0,
+                );
+            }
+        }
         menu.connect_show(move |menu| {
             // GNOME/Ubuntu owns AppIndicator clicks and only tells the app to
             // show its menu. Treat that signal as activation, close the menu,
