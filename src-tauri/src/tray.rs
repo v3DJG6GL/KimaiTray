@@ -895,7 +895,7 @@ pub fn set_display_mode(app: AppHandle, mode: String) -> Result<(), String> {
 
     if detached {
         // Detached windows should be freely resizable. Tray mode restores
-        // the fixed-width / bounded-height constraints in set_popup_size.
+        // the bounded width and height constraints in set_popup_size.
         window
             .set_min_size(None::<tauri::Size>)
             .map_err(|e| e.to_string())?;
@@ -1179,11 +1179,11 @@ fn position_legacy_popup(window: &WebviewWindow) -> tauri::Result<()> {
 static VIBRANCY_APPLIED: AtomicBool = AtomicBool::new(false);
 
 fn validate_popup_geometry(width: f64, height: f64, zoom: f64) -> Result<(), String> {
-    if !width.is_finite() || !(240.0..=1600.0).contains(&width) {
-        return Err("Popup width must be between 240 and 1600".into());
-    }
     if !zoom.is_finite() || !(0.5..=2.5).contains(&zoom) {
         return Err("Popup zoom must be between 0.5 and 2.5".into());
+    }
+    if !width.is_finite() || !(300.0 * zoom..=1000.0 * zoom).contains(&width) {
+        return Err("Popup width must be between 300 and 1000".into());
     }
     if !height.is_finite() || !(320.0 * zoom..=1200.0 * zoom).contains(&height) {
         return Err("Popup height must be between 320 and 1200".into());
@@ -1293,6 +1293,8 @@ mod tests {
     fn popup_geometry_accepts_supported_values() {
         assert!(validate_popup_geometry(360.0, 640.0, 1.0).is_ok());
         assert!(validate_popup_geometry(576.0, 1920.0, 1.6).is_ok());
+        assert!(validate_popup_geometry(255.0, 544.0, 0.85).is_ok());
+        assert!(validate_popup_geometry(1600.0, 1920.0, 1.6).is_ok());
     }
 
     #[test]
@@ -1300,6 +1302,8 @@ mod tests {
         assert!(validate_popup_geometry(f64::NAN, 640.0, 1.0).is_err());
         assert!(validate_popup_geometry(360.0, f64::INFINITY, 1.0).is_err());
         assert!(validate_popup_geometry(360.0, 640.0, 10.0).is_err());
+        assert!(validate_popup_geometry(299.0, 640.0, 1.0).is_err());
+        assert!(validate_popup_geometry(1601.0, 1920.0, 1.6).is_err());
     }
 
     #[test]
@@ -1319,14 +1323,14 @@ pub fn set_popup_size(app: AppHandle, width: f64, height: f64, zoom: f64) -> Res
         .ok_or("Popup not found")?;
     let size = tauri::Size::Logical(tauri::LogicalSize { width, height });
 
-    // Keep the popup width fixed while allowing the user to resize its
-    // height. Values are logical pixels, so scale the bounds with the UI zoom.
+    // Allow both edges to resize. Equal width bounds suppress GTK's horizontal
+    // resize handle. Values are logical pixels scaled with the UI zoom.
     let min_size = tauri::Size::Logical(tauri::LogicalSize {
-        width,
+        width: 300.0 * zoom,
         height: 320.0 * zoom,
     });
     let max_size = tauri::Size::Logical(tauri::LogicalSize {
-        width,
+        width: 1000.0 * zoom,
         height: 1200.0 * zoom,
     });
     window.set_resizable(true).map_err(|e| e.to_string())?;

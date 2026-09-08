@@ -71,6 +71,7 @@ export const defaultSettings: AppSettings = {
 
   theme: "light",
   uiSize: "default",
+  popupWidth: 360,
   popupHeight: 640,
   roundedPopupCorners: true,
   reduceVisualEffects: false,
@@ -471,6 +472,7 @@ export function mergeSettings(raw?: Partial<AppSettings> | null): AppSettings {
       ["small", "default", "large", "scale130", "scale145", "scale160"] as const,
       defaultSettings.uiSize,
     ),
+    popupWidth: integerValue(value.popupWidth, defaultSettings.popupWidth, 300, 1000),
     popupHeight: integerValue(
       value.popupHeight,
       defaultSettings.popupHeight,
