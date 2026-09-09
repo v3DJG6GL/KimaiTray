@@ -318,25 +318,6 @@ xattr -cr /Applications/KimaiTray.app
 chmod +x KimaiTray_*.AppImage
 ```
 
-**Linux: tray icon missing on KDE Plasma / Kubuntu**
-KimaiTray uses AppIndicator on KDE Plasma and Wayland sessions. Plasma supports
-these icons natively; GNOME may need an AppIndicator extension. Legacy GTK tray
-icons are used on Cinnamon, Xfce and MATE under X11.
-
-For KimaiTray releases without this fix that select the legacy backend on
-Plasma, quit KimaiTray and launch it with the backend override (substitute the
-AppImage path if needed):
-```sh
-KIMAITRAY_TRAY_BACKEND=appindicator kimaitray
-```
-If the icon appears but clicks do nothing, use a build containing this fix:
-affected KimaiTray releases can discard the required AppIndicator menu when
-the saved right-click action is set to "popup".
-
-On KDE Plasma, left/right clicks open the tray menu. Middle-click
-opens or hides KimaiTray directly on hosts such as Plasma that support secondary
-activation; **Show/Hide** in the menu is always available.
-
 **Windows: WebView2 missing**
 The NSIS installer bundles a WebView2 bootstrapper. If you built manually, install [WebView2 Runtime](https://developer.microsoft.com/en-us/microsoft-edge/webview2/).
 
@@ -349,6 +330,17 @@ D-Bus API on Wayland. Install `xprintidle` when using X11:
 ```sh
 sudo apt install xprintidle
 ```
+
+### Linux: Tray Icon
+
+- KimaiTray uses AppIndicator in **Wayland** sessions.
+- **GNOME Shell** _may_ need an AppIndicator extension to display the tray icon.
+- **Cinnamon**, **Xfce** and **MATE** use legacy GTK tray icons under **X11**.
+
+#### AppIndicator clicks
+
+- Tauri does not expose direct tray-click callbacks on Linux. Use **Show/Hide** in the tray menu to open or hide KimaiTray.
+- **Middle-click** also toggles the popup on tray hosts that support secondary activation, such as KDE Plasma.
 
 ## License
 
