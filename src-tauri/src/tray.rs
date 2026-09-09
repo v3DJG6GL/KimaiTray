@@ -720,7 +720,6 @@ fn linux_needs_appindicator(backend: Option<&str>, desktop: &str, is_wayland: bo
         return backend.eq_ignore_ascii_case("appindicator");
     }
     // GtkStatusIcon uses XEmbed and cannot create a native Wayland tray icon.
-    // Keep the existing desktop-specific backend selection on X11.
     is_wayland || desktop_name_needs_appindicator(&desktop.to_ascii_lowercase())
 }
 
@@ -1957,10 +1956,9 @@ fn attach_appindicator_popup_activation(app: &AppHandle) -> tauri::Result<()> {
         }
 
         let menu: gtk::Menu = unsafe { from_glib_none(menu_ptr) };
-        // Compatible tray hosts send middle-click requests through AppIndicator's
+        // On Linux with AppIndicator: send middle-click requests through AppIndicator's
         // secondary activation. Forward them to Show/Hide without relying on
-        // Tauri's unsupported Linux tray mouse events. The attached menu owns
-        // the target for as long as the indicator is alive.
+        // Tauri's unsupported Linux tray mouse events.
         if let Some(toggle_item) = menu.children().first() {
             unsafe {
                 libappindicator_sys::app_indicator_set_secondary_activate_target(
