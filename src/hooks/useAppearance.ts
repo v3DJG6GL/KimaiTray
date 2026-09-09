@@ -6,6 +6,8 @@ import type { AppSettings } from "../types";
 
 const POPUP_BASE_WIDTH = 360;
 const POPUP_BASE_HEIGHT = 640;
+const POPUP_MIN_WIDTH = 300;
+const POPUP_MAX_WIDTH = 1000;
 const POPUP_MIN_HEIGHT = 320;
 const POPUP_MAX_HEIGHT = 1200;
 
@@ -68,7 +70,7 @@ function apply(s: AppSettings) {
   const scale = UI_SIZE_SCALE[s.uiSize];
 
   if (!isDetached) {
-    const w = Math.round(POPUP_BASE_WIDTH * scale);
+    const w = Math.round((s.popupWidth || POPUP_BASE_WIDTH) * scale);
     const baseHeight = s.popupHeight || POPUP_BASE_HEIGHT;
     const h = Math.round(baseHeight * scale);
     const sizeKey = `tray:${w}:${h}:${scale}`;
@@ -119,7 +121,7 @@ export function useAppearance() {
     let active = true;
     let currentSettings: AppSettings | null = null;
     let resizeTimer: ReturnType<typeof setTimeout> | null = null;
-    let pendingHeight: number | null = null;
+    let pendingSize: Pick<AppSettings, "popupWidth" | "popupHeight"> | null = null;
     let removeResizeListener: (() => void) | null = null;
     const currentWindow = getCurrentWindow();
     const resizeListener =
@@ -130,6 +132,10 @@ export function useAppearance() {
               if (!settings || settings.displayMode === "detached") return;
 
               const scale = UI_SIZE_SCALE[settings.uiSize];
+              const nextWidth = Math.min(
+                POPUP_MAX_WIDTH,
+                Math.max(POPUP_MIN_WIDTH, Math.round(payload.width / nativeScale / scale)),
+              );
               const nextHeight = Math.min(
                 POPUP_MAX_HEIGHT,
                 Math.max(
@@ -137,15 +143,15 @@ export function useAppearance() {
                   Math.round(payload.height / nativeScale / scale),
                 ),
               );
-              if (nextHeight === settings.popupHeight) return;
+              if (nextWidth === settings.popupWidth && nextHeight === settings.popupHeight) return;
 
-              currentSettings = { ...settings, popupHeight: nextHeight };
-              pendingHeight = nextHeight;
+              pendingSize = { popupWidth: nextWidth, popupHeight: nextHeight };
+              currentSettings = { ...settings, ...pendingSize };
               if (resizeTimer) clearTimeout(resizeTimer);
               resizeTimer = setTimeout(() => {
-                const height = pendingHeight!;
-                pendingHeight = null;
-                void patchSettings({ popupHeight: height }).catch(() => {});
+                const size = pendingSize!;
+                pendingSize = null;
+                void patchSettings(size).catch(() => {});
               }, 250);
             }),
           )

@@ -125,6 +125,8 @@ export interface AppSettings {
 
   theme: "light" | "dark" | "transparent";
   uiSize: "small" | "default" | "large" | "scale130" | "scale145" | "scale160";
+  /** Base tray popup width in logical pixels, before UI scaling. */
+  popupWidth: number;
   /** Base tray popup height in logical pixels, before UI scaling. */
   popupHeight: number;
   roundedPopupCorners: boolean;

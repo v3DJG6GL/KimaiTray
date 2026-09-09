@@ -24,6 +24,7 @@
     "noTimerReminderMinutes",
     "theme",
     "uiSize",
+    "popupWidth",
     "popupHeight",
     "roundedPopupCorners",
     "reduceVisualEffects",
