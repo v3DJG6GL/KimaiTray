@@ -340,7 +340,7 @@ sudo apt install xprintidle
 #### Wayland AppIndicator
 
 - Tauri does not expose direct left/right clicks on tray icons. Therefore, left/right click both open the tray menu.
-- **Middle-click** also toggles the popup on tray hosts that support secondary activation, such as KDE Plasma.
+- As a workaround, **middle-click** opens the KimaiTray popup/window.
 
 ## License
 
