@@ -334,12 +334,12 @@ sudo apt install xprintidle
 ### Linux: Tray Icon
 
 - KimaiTray uses AppIndicator in **Wayland** sessions.
-- **GNOME Shell** _may_ need an AppIndicator extension to display the tray icon.
+- **GNOME** _may_ need an AppIndicator extension to display the tray icon.
 - **Cinnamon**, **Xfce** and **MATE** use legacy GTK tray icons under **X11**.
 
-#### AppIndicator clicks
+#### Wayland AppIndicator
 
-- Tauri does not expose direct tray-click callbacks on Linux. Use **Show/Hide** in the tray menu to open or hide KimaiTray.
+- Tauri does not expose direct left/right clicks on tray icons. Therefore, left/right click both open the tray menu.
 - **Middle-click** also toggles the popup on tray hosts that support secondary activation, such as KDE Plasma.
 
 ## License
