@@ -1453,8 +1453,7 @@ pub fn set_popup_size(app: AppHandle, width: f64, height: f64, zoom: f64) -> Res
         .ok_or("Popup not found")?;
     let size = tauri::Size::Logical(tauri::LogicalSize { width, height });
 
-    // Allow both edges to resize. Equal width bounds suppress GTK's horizontal
-    // resize handle. Values are logical pixels scaled with the UI zoom.
+    // Allow width and height resizing within bounds scaled by the UI zoom.
     let min_size = tauri::Size::Logical(tauri::LogicalSize {
         width: 300.0 * zoom,
         height: 320.0 * zoom,
