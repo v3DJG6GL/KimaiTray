@@ -309,7 +309,6 @@ pub fn run() {
                 tauri::WindowEvent::Focused(focused) => {
                     tray::on_popup_focus_changed(window, *focused);
                 }
-                #[cfg(target_os = "linux")]
                 tauri::WindowEvent::Resized(_) => tray::on_popup_resize(),
                 _ => {}
             },
