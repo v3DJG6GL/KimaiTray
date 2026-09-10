@@ -51,6 +51,17 @@ pub fn supports_window_positioning() -> bool {
     !is_wayland()
 }
 
+pub fn remembers_popup_position() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        crate::kde::remembers_position()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        false
+    }
+}
+
 pub fn supports_always_on_top() -> bool {
     !is_wayland()
 }

@@ -346,6 +346,16 @@ sudo apt install xprintidle
 - Tauri does not expose direct left/right clicks on tray icons. Therefore, left/right click both open the tray menu.
 - As a workaround, **middle-click** opens the KimaiTray popup/window.
 
+#### Window position on KDE Plasma
+
+KimaiTray automatically sets up position remembering on KDE Plasma, in both
+Wayland and X11 sessions. This covers the tray popup and detached window.
+Existing window rules and saved positions are preserved. An explicitly selected
+monitor/corner on X11 takes precedence over the remembered position.
+
+Setup uses KDE's `kwriteconfig6` (or `kwriteconfig5`) and `gdbus`. If setup fails,
+KimaiTray continues normally and records the reason in its log.
+
 ## License
 
 [MIT](LICENSE)

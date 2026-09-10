@@ -1,6 +1,8 @@
 mod http;
 mod idle;
 mod idle_stats;
+#[cfg(target_os = "linux")]
+mod kde;
 mod keychain;
 mod platform;
 mod shortcuts;
@@ -237,6 +239,8 @@ pub fn run() {
             );
             // Must run before tray/shortcuts read the store.
             migrate_legacy_data(app.handle());
+            #[cfg(target_os = "linux")]
+            kde::initialize();
             idle_stats::start(app.handle().clone());
             tray::create_tray(app.handle())?;
             info!("System tray created");
@@ -268,7 +272,9 @@ pub fn run() {
                     }
                     #[cfg(not(target_os = "linux"))]
                     let _ = w.set_skip_taskbar(false);
-                    let _ = w.center();
+                    if !platform::remembers_popup_position() {
+                        let _ = w.center();
+                    }
                     let _ = w.show();
                 }
             }

@@ -1015,7 +1015,9 @@ pub fn set_display_mode(app: AppHandle, mode: String) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
 
     if detached {
-        let _ = window.center();
+        if !crate::platform::remembers_popup_position() {
+            let _ = window.center();
+        }
         let _ = window.show();
         restore_and_focus_popup(&window);
     }
@@ -1723,11 +1725,12 @@ pub fn show_popup_window(app: &AppHandle) {
             let _ = popup.show();
             restore_and_focus_popup(&popup);
         } else {
-            if POPUP_MONITOR_MODE.load(Ordering::SeqCst) == 1 {
+            let specific_monitor = POPUP_MONITOR_MODE.load(Ordering::SeqCst) == 1;
+            if specific_monitor {
                 let idx = POPUP_MONITOR_INDEX.load(Ordering::SeqCst);
                 let pos = POPUP_MONITOR_POS.load(Ordering::SeqCst);
                 let _ = position_on_monitor(&popup, idx, pos);
-            } else {
+            } else if !crate::platform::remembers_popup_position() {
                 #[cfg(target_os = "linux")]
                 if linux_uses_appindicator() {
                     if let Some(tray) = app.tray_by_id("main") {
@@ -1747,6 +1750,15 @@ pub fn show_popup_window(app: &AppHandle) {
                 }
             }
             let _ = popup.show();
+            // An explicit monitor/corner preference wins over KWin's initial
+            // remembered placement when mapping the window on X11.
+            if specific_monitor && crate::platform::remembers_popup_position() {
+                let _ = position_on_monitor(
+                    &popup,
+                    POPUP_MONITOR_INDEX.load(Ordering::SeqCst),
+                    POPUP_MONITOR_POS.load(Ordering::SeqCst),
+                );
+            }
             restore_and_focus_popup(&popup);
         }
     }
