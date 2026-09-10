@@ -9,7 +9,7 @@ const mocks = vi.hoisted(() => ({
   scaleFactor: vi.fn(),
   onResized: vi.fn(),
   resizeCleanup: vi.fn(),
-  resizeListener: undefined as ((event: { payload: { height: number } }) => void) | undefined,
+  resizeListener: undefined as ((event: { payload: { width: number; height: number } }) => void) | undefined,
   loadSettings: vi.fn(),
   onSettingsChange: vi.fn(),
   patchSettings: vi.fn(),
@@ -56,6 +56,7 @@ function settings(overrides: Partial<AppSettings> = {}): AppSettings {
     theme: "light",
     popupLayout: "classic",
     displayMode: "tray",
+    popupWidth: 360,
     popupHeight: 640,
     trayIconSize: "medium",
     trayIconShape: "dot",
@@ -122,15 +123,15 @@ describe("appearance synchronization", () => {
     });
     expect(document.documentElement.classList.contains("dark")).toBe(false);
 
-    act(() => mocks.resizeListener?.({ payload: { height: 100 } }));
+    act(() => mocks.resizeListener?.({ payload: { width: 720, height: 100 } }));
     await waitFor(
-      () => expect(mocks.patchSettings).toHaveBeenCalledWith({ popupHeight: 320 }),
+      () => expect(mocks.patchSettings).toHaveBeenCalledWith({ popupWidth: 360, popupHeight: 320 }),
       { timeout: 1_000 },
     );
 
-    act(() => mocks.resizeListener?.({ payload: { height: 9_999 } }));
+    act(() => mocks.resizeListener?.({ payload: { width: 720, height: 9_999 } }));
     await waitFor(
-      () => expect(mocks.patchSettings).toHaveBeenCalledWith({ popupHeight: 1_200 }),
+      () => expect(mocks.patchSettings).toHaveBeenCalledWith({ popupWidth: 360, popupHeight: 1_200 }),
       { timeout: 1_000 },
     );
 
@@ -174,6 +175,7 @@ describe("appearance synchronization", () => {
     document.documentElement.dataset.window = "settings";
     mocks.loadSettings.mockResolvedValue(settings({
       theme: "dark",
+      popupWidth: 0,
       popupHeight: 0,
       displayMode: undefined,
       trayIconSize: undefined,
@@ -193,22 +195,55 @@ describe("appearance synchronization", () => {
     vi.useFakeTimers();
     const { unmount } = renderHook(() => useAppearance());
     await act(async () => Promise.resolve());
-    act(() => mocks.resizeListener?.({ payload: { height: 1_280 } }));
+    act(() => mocks.resizeListener?.({ payload: { width: 720, height: 1_280 } }));
     expect(mocks.patchSettings).not.toHaveBeenCalled();
 
     act(() => mocks.settingsListener?.(settings({ popupHeight: 600 })));
-    act(() => mocks.resizeListener?.({ payload: { height: 1_200 } }));
+    act(() => mocks.resizeListener?.({ payload: { width: 720, height: 1_200 } }));
     expect(mocks.patchSettings).not.toHaveBeenCalled();
     mocks.patchSettings.mockRejectedValueOnce(new Error("disk"));
-    act(() => mocks.resizeListener?.({ payload: { height: 1_400 } }));
-    act(() => mocks.resizeListener?.({ payload: { height: 1_600 } }));
+    act(() => mocks.resizeListener?.({ payload: { width: 720, height: 1_400 } }));
+    act(() => mocks.resizeListener?.({ payload: { width: 720, height: 1_600 } }));
     await act(async () => vi.advanceTimersByTime(250));
     expect(mocks.patchSettings).toHaveBeenCalledTimes(1);
-    expect(mocks.patchSettings).toHaveBeenCalledWith({ popupHeight: 800 });
+    expect(mocks.patchSettings).toHaveBeenCalledWith({ popupWidth: 360, popupHeight: 800 });
 
     act(() => mocks.settingsListener?.(settings({ displayMode: "detached" })));
-    act(() => mocks.resizeListener?.({ payload: { height: 2_000 } }));
+    act(() => mocks.resizeListener?.({ payload: { width: 720, height: 2_000 } }));
     expect(mocks.patchSettings).toHaveBeenCalledTimes(1);
+    unmount();
+  });
+
+  it("restores width and persists horizontal resizing with display and UI scaling", async () => {
+    vi.useFakeTimers();
+    mocks.loadSettings.mockResolvedValue(settings({ popupWidth: 500, uiSize: "scale130" }));
+    const { unmount } = renderHook(() => useAppearance());
+    await act(async () => Promise.resolve());
+    expect(mocks.setPopupSize).toHaveBeenLastCalledWith(650, 832, 1.3);
+
+    act(() => mocks.resizeListener?.({ payload: { width: 1560, height: 1664 } }));
+    await act(async () => vi.advanceTimersByTime(250));
+    expect(mocks.patchSettings).toHaveBeenLastCalledWith({ popupWidth: 600, popupHeight: 640 });
+
+    // A subsequent height change must not reset the user-selected width.
+    act(() => mocks.settingsListener?.(settings({ popupWidth: 600, popupHeight: 700, uiSize: "scale130" })));
+    expect(mocks.setPopupSize).toHaveBeenLastCalledWith(780, 910, 1.3);
+    unmount();
+  });
+
+  it("bounds horizontal resizing and saves the last complete size", async () => {
+    vi.useFakeTimers();
+    const { unmount } = renderHook(() => useAppearance());
+    await act(async () => Promise.resolve());
+    act(() => mocks.resizeListener?.({ payload: { width: 100, height: 1280 } }));
+    await act(async () => vi.advanceTimersByTime(250));
+    expect(mocks.patchSettings).toHaveBeenLastCalledWith({ popupWidth: 300, popupHeight: 640 });
+
+    act(() => mocks.resizeListener?.({ payload: { width: 9999, height: 1280 } }));
+    act(() => mocks.resizeListener?.({ payload: { width: 9999, height: 1600 } }));
+    await act(async () => vi.advanceTimersByTime(250));
+    expect(mocks.patchSettings).toHaveBeenLastCalledWith({ popupWidth: 1000, popupHeight: 800 });
+    expect(mocks.patchSettings).toHaveBeenCalledTimes(2);
     unmount();
   });
 

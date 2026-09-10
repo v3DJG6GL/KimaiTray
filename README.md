@@ -64,7 +64,8 @@ Built with [Tauri 2](https://tauri.app/), React 19 and TypeScript.
 - Four popup layouts: Classic, Focus, Taskbar and Timeline
 - Light, dark and transparent themes, five accent colors and configurable Kimai color indicators
 - UI scaling from 85% to 160%, optional rounded corners, animations and translucency controls
-- Tray or resizable detached-window mode; macOS True Tray mode hides the Dock and Cmd+Tab entry
+- Resizable tray-popup and detached-window modes
+- macOS True Tray mode hides the Dock and Cmd+Tab entry
 - Custom tray icon shape, size and colors for running, paused, idle and error states
 - Configurable macOS menu-bar label (timer, project, activity or icon only) and tray left/right-click actions
 - Configurable popup monitor and placement on supported Linux/X11 desktops

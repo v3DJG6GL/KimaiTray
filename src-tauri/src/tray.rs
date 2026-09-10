@@ -624,6 +624,8 @@ fn draw_clock(color: Rgb, radius: f64) -> Vec<u8> {
 }
 
 static LAST_POPUP_HIDE: AtomicU64 = AtomicU64::new(0);
+static POPUP_FOCUS_GENERATION: AtomicU64 = AtomicU64::new(0);
+static LAST_POPUP_RESIZE: AtomicU64 = AtomicU64::new(0);
 // 0 = popup, 1 = nothing
 static TRAY_LEFT_ACTION: AtomicU8 = AtomicU8::new(0);
 // 0 = menu, 1 = popup
@@ -790,12 +792,183 @@ fn now_ms() -> u64 {
         .as_millis() as u64
 }
 
-pub fn on_popup_blur(window: &tauri::Window) {
-    if DISPLAY_MODE.load(Ordering::SeqCst) == 1 {
+#[derive(Debug, PartialEq)]
+enum PopupBlurAction {
+    KeepOpen,
+    Wait,
+    Hide,
+}
+
+fn popup_blur_action(
+    focused: bool,
+    pointer_down: bool,
+    resizing: bool,
+    since_resize_ms: u64,
+) -> PopupBlurAction {
+    if focused {
+        PopupBlurAction::KeepOpen
+    } else if pointer_down || resizing || since_resize_ms < 250 {
+        PopupBlurAction::Wait
+    } else {
+        PopupBlurAction::Hide
+    }
+}
+
+struct PopupInteraction {
+    focused: bool,
+    pointer_down: bool,
+    resizing: bool,
+}
+
+// Called only by the dismissal check dispatched to the UI thread.
+#[cfg(target_os = "linux")]
+fn popup_interaction(window: &tauri::Window) -> Option<PopupInteraction> {
+    let native = window.gtk_window().ok()?;
+    let pointer_down = native.window().is_some_and(|surface| {
+        surface
+            .display()
+            .default_seat()
+            .and_then(|seat| seat.pointer())
+            .is_some_and(|pointer| {
+                let (_, _, _, modifiers) = surface.device_position(&pointer);
+                modifiers.intersects(
+                    gdk::ModifierType::BUTTON1_MASK
+                        | gdk::ModifierType::BUTTON2_MASK
+                        | gdk::ModifierType::BUTTON3_MASK,
+                )
+            })
+    });
+    Some(PopupInteraction {
+        focused: native.is_active() || native.has_toplevel_focus(),
+        pointer_down,
+        resizing: false,
+    })
+}
+
+#[cfg(target_os = "windows")]
+fn popup_interaction(window: &tauri::Window) -> Option<PopupInteraction> {
+    use windows_sys::Win32::UI::{
+        Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON, VK_MBUTTON, VK_RBUTTON},
+        WindowsAndMessaging::{
+            GetForegroundWindow, GetGUIThreadInfo, GetWindowThreadProcessId, GUITHREADINFO,
+            GUI_INMOVESIZE,
+        },
+    };
+
+    let hwnd = window.hwnd().ok()?.0;
+    // Query the popup's own GUI thread so another application's move/resize
+    // operation cannot keep this popup open. No window handles are retained.
+    unsafe {
+        let thread_id = GetWindowThreadProcessId(hwnd, std::ptr::null_mut());
+        if thread_id == 0 {
+            return None;
+        }
+        let mut info = GUITHREADINFO {
+            cbSize: std::mem::size_of::<GUITHREADINFO>() as u32,
+            ..Default::default()
+        };
+        let resizing = GetGUIThreadInfo(thread_id, &mut info) != 0
+            && info.flags & GUI_INMOVESIZE != 0
+            && info.hwndMoveSize == hwnd;
+        Some(PopupInteraction {
+            focused: GetForegroundWindow() == hwnd,
+            pointer_down: [VK_LBUTTON, VK_MBUTTON, VK_RBUTTON]
+                .into_iter()
+                .any(|button| GetAsyncKeyState(button as i32) < 0),
+            resizing,
+        })
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn popup_interaction(window: &tauri::Window) -> Option<PopupInteraction> {
+    use objc::runtime::{Object, BOOL, NO};
+    use objc::{class, msg_send, sel, sel_impl};
+
+    let native = window.ns_window().ok()?.cast::<Object>();
+    if native.is_null() {
+        return None;
+    }
+    // Tauri owns the NSWindow; all AppKit queries run on its UI thread.
+    unsafe {
+        let focused: BOOL = msg_send![native, isKeyWindow];
+        let resizing: BOOL = msg_send![native, inLiveResize];
+        let buttons: usize = msg_send![class!(NSEvent), pressedMouseButtons];
+        Some(PopupInteraction {
+            focused: focused != NO,
+            pointer_down: buttons & 0b111 != 0,
+            resizing: resizing != NO,
+        })
+    }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
+fn popup_interaction(window: &tauri::Window) -> Option<PopupInteraction> {
+    Some(PopupInteraction {
+        focused: window.is_focused().ok()?,
+        pointer_down: false,
+        resizing: false,
+    })
+}
+
+pub fn on_popup_resize() {
+    LAST_POPUP_RESIZE.store(now_ms(), Ordering::SeqCst);
+}
+
+fn recheck_popup_blur(window: &tauri::Window, generation: u64) -> bool {
+    if POPUP_FOCUS_GENERATION.load(Ordering::SeqCst) != generation
+        || is_detached()
+        || !window.is_visible().unwrap_or(false)
+    {
+        return false;
+    }
+    let Some(interaction) = popup_interaction(window) else {
+        return false;
+    };
+    match popup_blur_action(
+        interaction.focused,
+        interaction.pointer_down,
+        interaction.resizing,
+        now_ms().saturating_sub(LAST_POPUP_RESIZE.load(Ordering::SeqCst)),
+    ) {
+        // Child-window focus events can disagree with native foreground focus.
+        // Keep watching for a real click away unless a focus-in event cancels us.
+        PopupBlurAction::KeepOpen | PopupBlurAction::Wait => true,
+        PopupBlurAction::Hide => {
+            LAST_POPUP_HIDE.store(now_ms(), Ordering::SeqCst);
+            let _ = window.hide();
+            false
+        }
+    }
+}
+
+pub fn on_popup_focus_changed(window: &tauri::Window, focused: bool) {
+    let generation = POPUP_FOCUS_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
+    if focused || is_detached() {
         return;
     }
-    LAST_POPUP_HIDE.store(now_ms(), Ordering::SeqCst);
-    let _ = window.hide();
+    let window = window.clone();
+    tauri::async_runtime::spawn(async move {
+        loop {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            if POPUP_FOCUS_GENERATION.load(Ordering::SeqCst) != generation {
+                break;
+            }
+            let (sender, receiver) = tokio::sync::oneshot::channel();
+            let handle = window.clone();
+            if window
+                .run_on_main_thread(move || {
+                    let _ = sender.send(recheck_popup_blur(&handle, generation));
+                })
+                .is_err()
+            {
+                break;
+            }
+            if !receiver.await.unwrap_or(false) {
+                break;
+            }
+        }
+    });
 }
 
 pub fn is_detached() -> bool {
@@ -820,7 +993,7 @@ pub fn set_display_mode(app: AppHandle, mode: String) -> Result<(), String> {
 
     if detached {
         // Detached windows should be freely resizable. Tray mode restores
-        // the fixed-width / bounded-height constraints in set_popup_size.
+        // the bounded width and height constraints in set_popup_size.
         window
             .set_min_size(None::<tauri::Size>)
             .map_err(|e| e.to_string())?;
@@ -1104,11 +1277,11 @@ fn position_legacy_popup(window: &WebviewWindow) -> tauri::Result<()> {
 static VIBRANCY_APPLIED: AtomicBool = AtomicBool::new(false);
 
 fn validate_popup_geometry(width: f64, height: f64, zoom: f64) -> Result<(), String> {
-    if !width.is_finite() || !(240.0..=1600.0).contains(&width) {
-        return Err("Popup width must be between 240 and 1600".into());
-    }
     if !zoom.is_finite() || !(0.5..=2.5).contains(&zoom) {
         return Err("Popup zoom must be between 0.5 and 2.5".into());
+    }
+    if !width.is_finite() || !(300.0 * zoom..=1000.0 * zoom).contains(&width) {
+        return Err("Popup width must be between 300 and 1000".into());
     }
     if !height.is_finite() || !(320.0 * zoom..=1200.0 * zoom).contains(&height) {
         return Err("Popup height must be between 320 and 1200".into());
@@ -1162,6 +1335,60 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     use super::linux_needs_appindicator;
+
+    use super::{popup_blur_action, PopupBlurAction};
+
+    #[test]
+    fn popup_survives_transient_focus_loss_during_pointer_and_resize_grabs() {
+        assert_eq!(
+            popup_blur_action(true, false, false, 1_000),
+            PopupBlurAction::KeepOpen
+        );
+        assert_eq!(
+            popup_blur_action(false, true, false, 1_000),
+            PopupBlurAction::Wait
+        );
+        assert_eq!(
+            popup_blur_action(false, false, false, 0),
+            PopupBlurAction::Wait
+        );
+        assert_eq!(
+            popup_blur_action(false, false, false, 249),
+            PopupBlurAction::Wait
+        );
+        assert_eq!(
+            popup_blur_action(false, false, false, 250),
+            PopupBlurAction::Hide
+        );
+    }
+
+    #[test]
+    fn keyboard_resize_waits_even_without_mouse_buttons_or_recent_resize_events() {
+        assert_eq!(
+            popup_blur_action(false, false, true, 30_000),
+            PopupBlurAction::Wait
+        );
+        assert_eq!(
+            popup_blur_action(false, false, false, 10),
+            PopupBlurAction::Wait
+        );
+        assert_eq!(
+            popup_blur_action(true, false, false, 300),
+            PopupBlurAction::KeepOpen
+        );
+    }
+
+    #[test]
+    fn real_focus_loss_dismisses_after_the_pointer_is_released() {
+        assert_eq!(
+            popup_blur_action(false, true, false, 30_000),
+            PopupBlurAction::Wait
+        );
+        assert_eq!(
+            popup_blur_action(false, false, false, 30_000),
+            PopupBlurAction::Hide
+        );
+    }
 
     #[cfg(target_os = "linux")]
     #[test]
@@ -1241,6 +1468,8 @@ mod tests {
     fn popup_geometry_accepts_supported_values() {
         assert!(validate_popup_geometry(360.0, 640.0, 1.0).is_ok());
         assert!(validate_popup_geometry(576.0, 1920.0, 1.6).is_ok());
+        assert!(validate_popup_geometry(255.0, 544.0, 0.85).is_ok());
+        assert!(validate_popup_geometry(1600.0, 1920.0, 1.6).is_ok());
     }
 
     #[test]
@@ -1248,6 +1477,8 @@ mod tests {
         assert!(validate_popup_geometry(f64::NAN, 640.0, 1.0).is_err());
         assert!(validate_popup_geometry(360.0, f64::INFINITY, 1.0).is_err());
         assert!(validate_popup_geometry(360.0, 640.0, 10.0).is_err());
+        assert!(validate_popup_geometry(299.0, 640.0, 1.0).is_err());
+        assert!(validate_popup_geometry(1601.0, 1920.0, 1.6).is_err());
     }
 
     #[test]
@@ -1267,14 +1498,13 @@ pub fn set_popup_size(app: AppHandle, width: f64, height: f64, zoom: f64) -> Res
         .ok_or("Popup not found")?;
     let size = tauri::Size::Logical(tauri::LogicalSize { width, height });
 
-    // Keep the popup width fixed while allowing the user to resize its
-    // height. Values are logical pixels, so scale the bounds with the UI zoom.
+    // Allow width and height resizing within bounds scaled by the UI zoom.
     let min_size = tauri::Size::Logical(tauri::LogicalSize {
-        width,
+        width: 300.0 * zoom,
         height: 320.0 * zoom,
     });
     let max_size = tauri::Size::Logical(tauri::LogicalSize {
-        width,
+        width: 1000.0 * zoom,
         height: 1200.0 * zoom,
     });
     window.set_resizable(true).map_err(|e| e.to_string())?;

@@ -313,13 +313,18 @@ fn validate_settings_patch_window(
         return Err("Window is not authorized to patch these settings".into());
     }
 
-    if values.len() == 1 && values.contains_key("popupHeight") {
-        let height = values
-            .get("popupHeight")
-            .and_then(Value::as_i64)
-            .ok_or("Popup height must be an integer")?;
-        if !(320..=1200).contains(&height) {
-            return Err("Popup height must be between 320 and 1200".into());
+    if !values.is_empty()
+        && values
+            .keys()
+            .all(|key| matches!(key.as_str(), "popupWidth" | "popupHeight"))
+    {
+        for (key, minimum, maximum) in [("popupWidth", 300, 1000), ("popupHeight", 320, 1200)] {
+            if let Some(value) = values.get(key) {
+                let dimension = value.as_i64().ok_or("Popup dimensions must be integers")?;
+                if !(minimum..=maximum).contains(&dimension) {
+                    return Err(format!("{key} must be between {minimum} and {maximum}"));
+                }
+            }
         }
         return Ok(());
     }
@@ -1060,6 +1065,38 @@ mod tests {
         )
         .is_err());
         assert!(validate_settings_patch_window("settings", &settings, &arbitrary_url).is_ok());
+    }
+
+    #[test]
+    fn tray_can_persist_bounded_dimensions_without_changing_other_settings() {
+        let settings = Map::new();
+        for dimensions in [
+            json!({"popupWidth": 300}),
+            json!({"popupWidth": 1000, "popupHeight": 1200}),
+            json!({"popupWidth": 600, "popupHeight": 700}),
+        ] {
+            assert!(validate_settings_patch_window(
+                "tray-popup",
+                &settings,
+                dimensions.as_object().unwrap(),
+            )
+            .is_ok());
+        }
+        for invalid in [
+            json!({"popupWidth": 299}),
+            json!({"popupWidth": 1001}),
+            json!({"popupWidth": 600.5}),
+            json!({"popupWidth": "600"}),
+            json!({"popupWidth": 600, "popupHeight": 1201}),
+            json!({"popupWidth": 600, "theme": "dark"}),
+        ] {
+            assert!(validate_settings_patch_window(
+                "tray-popup",
+                &settings,
+                invalid.as_object().unwrap(),
+            )
+            .is_err());
+        }
     }
 
     #[test]

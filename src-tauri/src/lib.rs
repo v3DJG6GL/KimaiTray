@@ -305,11 +305,13 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| match window.label() {
-            "tray-popup" => {
-                if let tauri::WindowEvent::Focused(false) = event {
-                    tray::on_popup_blur(window);
+            "tray-popup" => match event {
+                tauri::WindowEvent::Focused(focused) => {
+                    tray::on_popup_focus_changed(window, *focused);
                 }
-            }
+                tauri::WindowEvent::Resized(_) => tray::on_popup_resize(),
+                _ => {}
+            },
             "settings" | "changelog" => {
                 if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                     api.prevent_close();

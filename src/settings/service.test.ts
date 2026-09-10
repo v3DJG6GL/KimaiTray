@@ -38,6 +38,10 @@ describe("settings schema defaults", () => {
       new Set(Object.keys(defaultSettings)),
     );
   });
+  it("supplies a width for legacy settings and bounds narrow stored widths", () => {
+    expect(mergeSettings({}).popupWidth).toBe(360);
+    expect(mergeSettings({ popupWidth: 250 }).popupWidth).toBe(300);
+  });
   it("deep-merges partial nested settings without mutating defaults", () => {
     const merged = mergeSettings({
       trayColors: { running: "#123456" } as typeof defaultSettings.trayColors,
@@ -100,6 +104,7 @@ describe("settings schema defaults", () => {
       idleThresholdMinutes: -20,
       noTimerReminderMinutes: 2000,
       popupMonitorIndex: 999,
+      popupWidth: 9999,
       popupHeight: 9999,
       popupLayout: "unknown",
       enableIdleDetection: "true",
@@ -114,6 +119,7 @@ describe("settings schema defaults", () => {
     expect(merged.idleThresholdMinutes).toBe(1);
     expect(merged.noTimerReminderMinutes).toBe(1440);
     expect(merged.popupMonitorIndex).toBe(255);
+    expect(merged.popupWidth).toBe(1000);
     expect(merged.popupHeight).toBe(1200);
     expect(merged.popupLayout).toBe(defaultSettings.popupLayout);
     expect(merged.enableIdleDetection).toBe(defaultSettings.enableIdleDetection);
