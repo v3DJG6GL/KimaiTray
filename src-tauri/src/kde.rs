@@ -1,7 +1,8 @@
 //! Let KWin own the main window's position on Plasma (X11 and Wayland).
 use glib::{KeyFile, KeyFileFlags};
+use gtk::prelude::*;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
@@ -40,12 +41,23 @@ pub fn initialize() {
     }
     // Normally finishes before the first show. Autostart can race KWin's bus
     // registration; retry off the UI thread without holding up the application.
-    if let Err(error) = initialize_once() {
+    let class = if gdk::Display::default()
+        .is_some_and(|display| display.type_().name() == "GdkX11Display")
+    {
+        gdk::program_class()
+            .map(|name| name.to_string())
+            .unwrap_or_else(|| "Kimaitray".into())
+    } else {
+        glib::prgname()
+            .map(|name| name.to_string())
+            .unwrap_or_else(|| "kimaitray".into())
+    };
+    if let Err(error) = initialize_once(&class) {
         log::warn!("KDE position remembering: {error}");
-        std::thread::spawn(|| {
+        std::thread::spawn(move || {
             for delay in [1, 2] {
                 std::thread::sleep(Duration::from_secs(delay));
-                match initialize_once() {
+                match initialize_once(&class) {
                     Ok(()) => return,
                     Err(error) => log::warn!("KDE position remembering: {error}"),
                 }
@@ -54,7 +66,7 @@ pub fn initialize() {
     }
 }
 
-fn initialize_once() -> Result<(), String> {
+fn initialize_once(class: &str) -> Result<(), String> {
     let deadline = Instant::now() + Duration::from_secs(2);
     kwin_call("org.freedesktop.DBus.Peer.Ping", deadline)?;
     let directory = std::env::var_os("XDG_CONFIG_HOME")
@@ -74,15 +86,16 @@ fn initialize_once() -> Result<(), String> {
         .into_iter()
         .find_map(find_program)
         .ok_or("kwriteconfig6/kwriteconfig5 is unavailable")?;
-    let enabled = ensure_rule(&path, |group, key, value| {
+    let state = ensure_rule(&path, class, deadline, |stage, group, key, value| {
         let mut command = Command::new(&writer);
-        command.args(["--file"]).arg(&path);
+        command.arg("--file").arg(stage);
         command.args(["--group", group, "--key", key, "--", value]);
-        run(command, deadline)?;
-        RELOAD_PENDING.store(true, Ordering::Relaxed);
-        Ok(())
+        crate::linux_command::run(command, deadline, false).map(|_| ())
     })?;
-    if enabled {
+    if state == RuleState::Created {
+        RELOAD_PENDING.store(true, Ordering::Relaxed);
+    }
+    if state != RuleState::Unmanaged {
         // Reload only after writing. Reloading an unchanged rule can discard
         // positions that KWin has learned in memory but has not saved yet.
         if RELOAD_PENDING.load(Ordering::Relaxed) {
@@ -114,41 +127,7 @@ fn kwin_call(method: &str, deadline: Instant) -> Result<(), String> {
         "--method",
         method,
     ]);
-    run(command, deadline)
-}
-
-fn run(mut command: Command, deadline: Instant) -> Result<(), String> {
-    let program = command.get_program().to_string_lossy().into_owned();
-    if Instant::now() >= deadline {
-        return Err("KDE setup timed out".into());
-    }
-    // AppImage's bundled Qt libraries must not be loaded by host KDE tools.
-    if std::env::var_os("APPIMAGE").is_some() {
-        command
-            .env_remove("LD_LIBRARY_PATH")
-            .env_remove("QT_PLUGIN_PATH");
-    }
-    let mut child = command
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|error| format!("{program}: {error}"))?;
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) if status.success() => return Ok(()),
-            Ok(Some(status)) => return Err(format!("{program} exited with {status}")),
-            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(10)),
-            result => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(match result {
-                    Err(error) => error.to_string(),
-                    _ => format!("{program} timed out"),
-                });
-            }
-        }
-    }
+    crate::linux_command::run(command, deadline, false).map(|_| ())
 }
 
 fn read(path: &Path) -> Result<KeyFile, String> {
@@ -203,83 +182,158 @@ fn rule_ids(config: &KeyFile) -> Result<Vec<String>, String> {
     Ok(ids)
 }
 
-fn existing_policy(config: &KeyFile, ids: &[String]) -> Option<bool> {
-    for id in ids {
-        let class = value(config, id, "wmclass");
-        let class_match = value(config, id, "wmclassmatch");
-        let matches_class = (class_match == "1" && class.eq_ignore_ascii_case("kimaitray"))
-            || (class_match == "3" && class == "(?i)^kimaitray$");
-        if matches_class
-            && value(config, id, "title") == "KimaiTray"
-            && value(config, id, "titlematch") == "1"
-        {
-            let position = value(config, id, "positionrule");
-            if id != RULE_ID && matches!(position.as_str(), "" | "0") {
-                continue;
-            }
-            // A user's customised/disabled rule is not ours to repair.
-            return Some(
-                position == "4"
-                    // Exact class matches can cover only one of the native
-                    // Wayland/XWayland identities; preserve without assuming
-                    // they manage this window in both sessions.
-                    && class_match == "3"
-                    && !matches!(value(config, id, "enabled").as_str(), "false" | "0")
-                    && matches!(
-                        value(config, id, "wmclasscomplete").as_str(),
-                        "" | "false" | "0"
-                    )
-                    && config.keys(id).is_ok_and(|keys| keys.iter().all(|key| {
-                        !key.ends_with("match") || matches!(key.as_str(), "wmclassmatch" | "titlematch")
-                            || matches!(value(config, id, key).as_str(), "" | "0")
-                    }))
-                    && value(config, id, "types").parse::<u32>().unwrap_or(u32::MAX) & 1 != 0,
-            );
+fn matches(pattern: &str, kind: &str, actual: &str) -> bool {
+    match kind {
+        "" | "0" => true,
+        "1" => pattern == actual,
+        "2" => actual.contains(pattern),
+        "3" => {
+            let (Ok(pattern), Ok(actual)) = (
+                std::ffi::CString::new(pattern),
+                std::ffi::CString::new(actual),
+            ) else {
+                return false;
+            };
+            // GLib and QRegularExpression use PCRE. Both C strings remain valid
+            // for the call; g_regex_match_simple owns its temporary regex.
+            unsafe { glib::ffi::g_regex_match_simple(pattern.as_ptr(), actual.as_ptr(), 0, 0) != 0 }
         }
+        _ => false,
+    }
+}
+
+fn existing_policy(config: &KeyFile, ids: &[String], class: &str) -> Option<bool> {
+    for id in ids {
+        if !matches(
+            &value(config, id, "wmclass"),
+            &value(config, id, "wmclassmatch"),
+            class,
+        ) || !matches(
+            &value(config, id, "title"),
+            &value(config, id, "titlematch"),
+            "KimaiTray",
+        ) {
+            continue;
+        }
+        let position = value(config, id, "positionrule");
+        if id != RULE_ID && matches!(position.as_str(), "" | "0") {
+            continue;
+        }
+        // Keep user customisations. Additional matching constraints may exclude
+        // this window, so do not assume those rules manage its position.
+        return Some(
+            position == "4"
+                && !matches!(
+                    value(config, id, "enabled").to_ascii_lowercase().as_str(),
+                    "false" | "0" | "off" | "no"
+                )
+                && matches!(
+                    value(config, id, "wmclasscomplete").as_str(),
+                    "" | "false" | "0"
+                )
+                && config.keys(id).is_ok_and(|keys| {
+                    keys.iter().all(|key| {
+                        !key.ends_with("match")
+                            || matches!(key.as_str(), "wmclassmatch" | "titlematch")
+                            || matches!(value(config, id, key).as_str(), "" | "0")
+                    })
+                })
+                && value(config, id, "types")
+                    .parse::<u32>()
+                    .unwrap_or(u32::MAX)
+                    & 1
+                    != 0,
+        );
     }
     None
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum RuleState {
+    Created,
+    Existing,
+    Unmanaged,
+}
+
 fn ensure_rule(
     path: &Path,
-    mut write: impl FnMut(&str, &str, &str) -> Result<(), String>,
-) -> Result<bool, String> {
-    let config = read(path)?;
+    class: &str,
+    deadline: Instant,
+    mut write: impl FnMut(&Path, &str, &str, &str) -> Result<(), String>,
+) -> Result<RuleState, String> {
+    let parent = path.parent().ok_or("No config directory")?;
+    std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    // Use KConfig's canonical lock path, including when kwinrulesrc is a symlink.
+    let path = if path.exists() || path.is_symlink() {
+        path.canonicalize().map_err(|e| e.to_string())?
+    } else {
+        parent
+            .canonicalize()
+            .map_err(|e| e.to_string())?
+            .join(path.file_name().ok_or("No config filename")?)
+    };
+    let _lock = crate::kconfig_lock::ConfigLock::acquire(&path, deadline)?;
+    let config = read(&path)?;
     let ids = rule_ids(&config)?;
-    if let Some(enabled) = existing_policy(&config, &ids) {
-        return Ok(enabled);
+    if let Some(enabled) = existing_policy(&config, &ids, class) {
+        return Ok(if enabled {
+            RuleState::Existing
+        } else {
+            RuleState::Unmanaged
+        });
     }
-    // Do not overwrite a user-edited or partially written group with our ID.
     if config.has_group(RULE_ID) || ids.iter().any(|id| id == RULE_ID) {
-        return Ok(false);
+        return Ok(RuleState::Unmanaged);
+    }
+    let stage_dir = tempfile::tempdir_in(path.parent().unwrap()).map_err(|e| e.to_string())?;
+    let stage = stage_dir.path().join("kwinrulesrc");
+    if path.exists() {
+        // Atomic replacement must not bypass permissions on the original file.
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .map_err(|e| e.to_string())?;
+        std::fs::copy(&path, &stage).map_err(|e| e.to_string())?;
+    } else {
+        std::fs::write(&stage, "").map_err(|e| e.to_string())?;
     }
     for &(key, value) in RULE {
-        write(RULE_ID, key, value)?;
+        write(&stage, RULE_ID, key, value)?;
     }
-    // Register only the complete group, using a fresh list so intervening
-    // changes to other rules are retained. KConfig handles individual writes.
-    let config = read(path)?;
-    if RULE
-        .iter()
-        .any(|&(key, expected)| value(&config, RULE_ID, key) != expected)
+    let mut ids = ids;
+    ids.push(RULE_ID.into());
+    write(&stage, "General", "rules", &ids.join(","))?;
+    write(&stage, "General", "count", &ids.len().to_string())?;
+    let prepared = read(&stage)?;
+    if rule_ids(&prepared)? != ids
+        || RULE
+            .iter()
+            .any(|&(key, expected)| value(&prepared, RULE_ID, key) != expected)
     {
         return Err("KWin rule write could not be verified".into());
     }
-    let mut ids = rule_ids(&config)?;
-    if !ids.iter().any(|id| id == RULE_ID) {
-        ids.push(RULE_ID.into());
+    if Instant::now() >= deadline {
+        return Err("KDE setup timed out".into());
     }
-    write("General", "rules", &ids.join(","))?;
-    write("General", "count", &ids.len().to_string())?;
-    if rule_ids(&read(path)?)? != ids {
-        return Err("KWin rule registration could not be verified".into());
-    }
-    Ok(true)
+    // KConfig's writes replace the staged inode. Open that path again to sync
+    // the finished file, then publish the entire transaction with one rename.
+    std::fs::File::open(&stage)
+        .and_then(|file| file.sync_all())
+        .map_err(|e| e.to_string())?;
+    std::fs::rename(&stage, &path).map_err(|e| e.to_string())?;
+    Ok(RuleState::Created)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn fixture(data: &str) -> (tempfile::TempDir, PathBuf) {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("kwinrulesrc");
+        std::fs::write(&path, data).unwrap();
+        (directory, path)
+    }
 
     fn write_fixture(path: &Path, group: &str, key: &str, value: &str) -> Result<(), String> {
         let config = read(path)?;
@@ -287,50 +341,70 @@ mod tests {
         std::fs::write(path, config.to_data()).map_err(|error| error.to_string())
     }
 
-    fn install(path: &Path) -> Result<bool, String> {
-        ensure_rule(path, |group, key, value| {
-            write_fixture(path, group, key, value)
-        })
+    fn install(path: &Path, class: &str) -> Result<RuleState, String> {
+        ensure_rule(
+            path,
+            class,
+            Instant::now() + Duration::from_secs(2),
+            write_fixture,
+        )
     }
 
     #[test]
     fn only_plasma_sessions_enable_setup() {
         for desktop in ["KDE", "kde", "Plasma", "plasmawayland", "KDE:Plasma"] {
-            assert!(is_plasma(desktop), "{desktop}");
+            assert!(is_plasma(desktop));
         }
         for desktop in ["", "GNOME", "ubuntu:GNOME", "XFCE", "not-kde"] {
-            assert!(!is_plasma(desktop), "{desktop}");
+            assert!(!is_plasma(desktop));
         }
     }
 
     #[test]
     fn installs_once_without_seeding_position_or_size() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("kwinrulesrc");
-        assert!(install(&path).unwrap());
+        let (_directory, path) = fixture("");
+        assert_eq!(install(&path, "kimaitray").unwrap(), RuleState::Created);
         let config = read(&path).unwrap();
         assert_eq!(rule_ids(&config).unwrap(), [RULE_ID]);
         assert!(!config.has_key(RULE_ID, "position").unwrap());
         assert!(!config.has_key(RULE_ID, "size").unwrap());
         write_fixture(&path, RULE_ID, "position", "3395,393").unwrap();
         let before = std::fs::read(&path).unwrap();
-        assert!(ensure_rule(&path, |_, _, _| panic!(
-            "existing rule must not be rewritten"
-        ))
-        .unwrap());
+        assert_eq!(
+            ensure_rule(
+                &path,
+                "kimaitray",
+                Instant::now() + Duration::from_secs(2),
+                |_, _, _, _| panic!("must not write")
+            )
+            .unwrap(),
+            RuleState::Existing
+        );
         assert_eq!(std::fs::read(&path).unwrap(), before);
     }
 
     #[test]
-    fn preserves_manual_rule_under_another_identifier() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("kwinrulesrc");
-        for &(key, value) in RULE {
-            write_fixture(&path, "user-rule", key, value).unwrap();
+    fn recognises_exact_and_equivalent_regex_manual_rules_for_current_identity() {
+        for class in ["kimaitray", "Kimaitray"] {
+            for (pattern, kind) in [
+                (class, "1"),
+                ("^[Kk]imaitray$", "3"),
+                ("(?i)^kimaitray$", "3"),
+            ] {
+                let (_directory, path) = fixture("[General]\nrules=manual\n");
+                for &(key, value) in RULE {
+                    write_fixture(&path, "manual", key, value).unwrap();
+                }
+                write_fixture(&path, "manual", "wmclass", pattern).unwrap();
+                write_fixture(&path, "manual", "wmclassmatch", kind).unwrap();
+                write_fixture(&path, "manual", "position", "-500,120").unwrap();
+                let before = std::fs::read(&path).unwrap();
+                assert_eq!(install(&path, class).unwrap(), RuleState::Existing);
+                assert_eq!(std::fs::read(&path).unwrap(), before);
+            }
         }
-        write_fixture(&path, "General", "rules", "user-rule").unwrap();
-        write_fixture(&path, "user-rule", "position", "-500,120").unwrap();
-        assert!(ensure_rule(&path, |_, _, _| panic!("manual rule must be preserved")).unwrap());
+        assert!(!matches("Kimaitray", "1", "kimaitray"));
+        assert!(!matches("KimaiTray", "1", "KimaiTray — Settings"));
     }
 
     #[test]
@@ -343,37 +417,35 @@ mod tests {
             ("types", "2"),
             ("General", ""),
         ] {
-            let directory = tempfile::tempdir().unwrap();
-            let path = directory.path().join("kwinrulesrc");
-            install(&path).unwrap();
+            let (_directory, path) = fixture("");
+            install(&path, "kimaitray").unwrap();
             if key == "General" {
                 write_fixture(&path, "General", "rules", "other").unwrap();
             } else {
                 write_fixture(&path, RULE_ID, key, value).unwrap();
             }
-            assert!(
-                !ensure_rule(&path, |_, _, _| panic!("customisation must be preserved")).unwrap()
-            );
+            let before = std::fs::read(&path).unwrap();
+            assert_eq!(install(&path, "kimaitray").unwrap(), RuleState::Unmanaged);
+            assert_eq!(std::fs::read(&path).unwrap(), before);
         }
     }
 
     #[test]
-    fn preserves_legacy_order_and_concurrent_additions() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("kwinrulesrc");
-        std::fs::write(
+    fn reads_concurrent_updates_only_after_acquiring_the_config_lock() {
+        let (_directory, path) =
+            fixture("[General]\ncount=2\n[1]\nDescription=First\n[2]\nDescription=Second\n");
+        let lock = crate::kconfig_lock::ConfigLock::acquire(
             &path,
-            "[General]\ncount=2\n[1]\nDescription=First\n[2]\nDescription=Second\n",
+            Instant::now() + Duration::from_secs(2),
         )
         .unwrap();
-        assert!(ensure_rule(&path, |group, key, value| {
-            write_fixture(&path, group, key, value)?;
-            if key == "positionrule" {
-                write_fixture(&path, "General", "rules", "1,2,new-user-rule")?;
-            }
-            Ok(())
-        })
-        .unwrap());
+        let worker_path = path.clone();
+        let worker = std::thread::spawn(move || install(&worker_path, "kimaitray"));
+        // Model the editor committing while it owns KDE's lock. The app must
+        // wait and then read this version, not append to an earlier snapshot.
+        write_fixture(&path, "General", "rules", "1,2,new-user-rule").unwrap();
+        drop(lock);
+        assert_eq!(worker.join().unwrap().unwrap(), RuleState::Created);
         let config = read(&path).unwrap();
         assert_eq!(
             rule_ids(&config).unwrap(),
@@ -389,51 +461,89 @@ mod tests {
             "[General]\norder=one,two\n",
             "not an ini file",
         ] {
-            let directory = tempfile::tempdir().unwrap();
-            let path = directory.path().join("kwinrulesrc");
-            std::fs::write(&path, data).unwrap();
-            assert!(
-                ensure_rule(&path, |_, _, _| panic!("unsafe config must not be changed")).is_err()
-            );
+            let (_directory, path) = fixture(data);
+            assert!(ensure_rule(
+                &path,
+                "kimaitray",
+                Instant::now() + Duration::from_secs(2),
+                |_, _, _, _| panic!("must not write")
+            )
+            .is_err());
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), data);
         }
     }
 
     #[test]
-    fn does_not_register_incomplete_or_failed_writes() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("kwinrulesrc");
-        assert!(ensure_rule(&path, |_, _, _| Err("read only".into())).is_err());
-        assert!(ensure_rule(&path, |_, _, _| Ok(())).is_err());
-        assert!(rule_ids(&read(&path).unwrap()).unwrap().is_empty());
+    fn failed_writes_leave_no_partial_rule_and_retry_succeeds() {
+        for failure in [1, 2, 8, 9] {
+            let (directory, path) = fixture("[General]\nrules=user\n[user]\nDescription=Keep me\n");
+            let before = std::fs::read(&path).unwrap();
+            let mut writes = 0;
+            assert!(ensure_rule(
+                &path,
+                "kimaitray",
+                Instant::now() + Duration::from_secs(2),
+                |stage, group, key, value| {
+                    writes += 1;
+                    if writes == failure {
+                        return Err("temporary write failure".into());
+                    }
+                    write_fixture(stage, group, key, value)
+                }
+            )
+            .is_err());
+            assert_eq!(std::fs::read(&path).unwrap(), before);
+            assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 1);
+            assert_eq!(install(&path, "kimaitray").unwrap(), RuleState::Created);
+        }
     }
 
     #[test]
-    fn kills_and_reaps_a_stalled_helper() {
-        let mut command = Command::new("sleep");
-        command.arg("10");
-        let started = Instant::now();
-        assert!(run(command, started + Duration::from_millis(30)).is_err());
-        assert!(started.elapsed() < Duration::from_secs(2));
+    fn rejects_unverified_writes_and_keeps_symlink_targets() {
+        let (directory, path) = fixture("");
+        assert!(ensure_rule(
+            &path,
+            "kimaitray",
+            Instant::now() + Duration::from_secs(2),
+            |_, _, _, _| Ok(())
+        )
+        .is_err());
+        let link = directory.path().join("linked-rules");
+        std::os::unix::fs::symlink(&path, &link).unwrap();
+        assert_eq!(install(&link, "kimaitray").unwrap(), RuleState::Created);
+        assert!(link.is_symlink());
+        assert_eq!(rule_ids(&read(&path).unwrap()).unwrap(), [RULE_ID]);
     }
 
     #[test]
-    #[ignore = "requires KDE's kwriteconfig6 utility; writes only to a temporary directory"]
+    #[ignore = "requires KDE's kwriteconfig6 utility; writes only to temporary configuration"]
     fn native_kconfig_round_trip() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("kwinrulesrc");
-        std::fs::write(&path, "[General]\ncount=1\nrules=other\n[other]\nDescription=User rule\nposition=50,70\npositionrule=4\n").unwrap();
-        assert!(ensure_rule(&path, |group, key, value| {
-            let mut command = Command::new("kwriteconfig6");
-            command
-                .arg("--file")
-                .arg(&path)
-                .args(["--group", group, "--key", key, "--", value]);
-            run(command, Instant::now() + Duration::from_secs(2))
-        })
-        .unwrap());
+        let (_directory, path) = fixture("[General]\ncount=1\nrules=other\n[other]\nDescription=User rule\nwmclass=other\nwmclassmatch=1\nposition=50,70\npositionrule=4\n");
+        assert_eq!(
+            ensure_rule(
+                &path,
+                "kimaitray",
+                Instant::now() + Duration::from_secs(2),
+                |stage, group, key, value| {
+                    let mut command = Command::new("kwriteconfig6");
+                    command
+                        .arg("--file")
+                        .arg(stage)
+                        .args(["--group", group, "--key", key, "--", value]);
+                    crate::linux_command::run(
+                        command,
+                        Instant::now() + Duration::from_secs(2),
+                        false,
+                    )
+                    .map(|_| ())
+                }
+            )
+            .unwrap(),
+            RuleState::Created
+        );
         let config = read(&path).unwrap();
         assert_eq!(rule_ids(&config).unwrap(), ["other", RULE_ID]);
         assert_eq!(value(&config, "other", "position"), "50,70");
-        assert!(ensure_rule(&path, |_, _, _| panic!("second launch must not write")).unwrap());
+        assert_eq!(install(&path, "kimaitray").unwrap(), RuleState::Existing);
     }
 }

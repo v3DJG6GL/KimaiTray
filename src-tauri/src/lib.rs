@@ -2,6 +2,8 @@ mod http;
 mod idle;
 mod idle_stats;
 #[cfg(target_os = "linux")]
+mod kconfig_lock;
+#[cfg(target_os = "linux")]
 mod kde;
 mod keychain;
 #[cfg(target_os = "linux")]
