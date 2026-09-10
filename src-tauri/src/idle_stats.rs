@@ -41,11 +41,9 @@ impl Collector {
         let returned = self
             .last_input
             .is_some_and(|previous| input > previous.saturating_add(2));
-        if returned {
-            if self.active_start.take().is_some() {
-                if let Some(period) = periods.last_mut() {
-                    period.ended_at = input.max(period.ended_at).min(now);
-                }
+        if returned && self.active_start.take().is_some() {
+            if let Some(period) = periods.last_mut() {
+                period.ended_at = input.max(period.ended_at).min(now);
             }
         }
         // A threshold change must not split an already recorded idle period.

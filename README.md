@@ -158,9 +158,11 @@ GitLab URL.
 
 | Tool | Version |
 |------|---------|
-| [Node.js](https://nodejs.org/) | 20.19+ |
+| [Node.js](https://nodejs.org/) | 22.12+ (22.x), 24.x or 26+ |
 | [Rust](https://rustup.rs/) | stable |
 | [Tauri CLI](https://tauri.app/start/) | Installed locally by `npm install` |
+
+TypeScript stays on 6.0 until `typescript-eslint` supports 7.x. Linux GTK/GLib bindings stay on 0.18 to match Tauri and libappindicator.
 
 ### Platform-specific
 
