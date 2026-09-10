@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.22.10] - 2026-09-10
+
+### New Features
+
+- **Automatic idle statistics** — locally record idle periods whenever idle detection is enabled, even without a running timer. View period counts, total duration, a daily chart and timestamped history in idle detection settings. Keep the last 30 days by default, configurable from 1 to 365 days, with automatic deletion of older data
+- **Resizable popup width and height** ([#38](https://github.com/Engazan/KimaiTray/pull/38), thanks to [@v3DJG6GL](https://github.com/v3DJG6GL)) — resize the tray popup in both directions and restore its saved dimensions with UI scaling and validated size limits
+
+### Bug Fixes
+
+- **Reliable popup resizing** ([#38](https://github.com/Engazan/KimaiTray/pull/38), thanks to [@v3DJG6GL](https://github.com/v3DJG6GL)) — keep the popup open while dragging its borders on Linux, Windows and macOS while preserving normal click-away dismissal
+- **Correct dimensions after switching monitors** — save popup dimensions using the current monitor's display scale and ignore stale resize responses
+- **Wayland tray visibility and activation** ([#37](https://github.com/Engazan/KimaiTray/pull/37), thanks to [@v3DJG6GL](https://github.com/v3DJG6GL)) — select AppIndicator on Wayland, restore KDE Plasma tray icons and support middle-click show/hide on compatible tray hosts while preserving X11 behavior and the tray menu
+
+### Maintenance
+
+- **Updated dependencies** — refreshed frontend and Rust dependencies, including React 19.3, Vite 8.3, Vitest 5 and Tauri plugins
+- **Node.js 22 build environment** — moved CI to Node.js 22 and updated development requirements for Vitest 5; TypeScript and Linux GTK/GLib remain on versions supported by their integrations
+
 ## [0.22.9] - 2026-09-04
 
 ### New Features
