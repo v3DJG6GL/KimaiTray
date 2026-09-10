@@ -47,6 +47,7 @@ Built with [Tauri 2](https://tauri.app/), React 19 and TypeScript.
 
 - Configurable global shortcuts for the popup, new task, stop, pause/resume, continue last task, edit note, open Kimai and Settings
 - Idle detection with configurable threshold and actions: ask, stop at idle start, stop now or keep running
+- Automatic local idle statistics with period history, total duration and a daily chart in idle detection settings; retained for 30 days by default (configurable from 1 to 365 days). Recording runs while the app and idle detection are enabled, even without a running timer.
 - Full-screen idle prompt and optional desktop notification
 - Configurable full-screen reminder when no timer has been running
 - Launch at login, configurable server refresh interval and one-click opening of Kimai

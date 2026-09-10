@@ -61,6 +61,7 @@ export const defaultSettings: AppSettings = {
 
   enableIdleDetection: false,
   idleThresholdMinutes: 5,
+  idleStatsRetentionDays: 30,
   idleAction: "ask",
   showIdleNotification: true,
   stopTimerOnScreensaver: false,
@@ -434,6 +435,12 @@ export function mergeSettings(raw?: Partial<AppSettings> | null): AppSettings {
       defaultSettings.idleThresholdMinutes,
       1,
       60,
+    ),
+    idleStatsRetentionDays: integerValue(
+      value.idleStatsRetentionDays,
+      defaultSettings.idleStatsRetentionDays,
+      1,
+      365,
     ),
     idleAction: enumValue(
       value.idleAction,

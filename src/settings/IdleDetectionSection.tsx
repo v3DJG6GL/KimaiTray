@@ -1,3 +1,4 @@
+import IdleStatistics from "./IdleStatistics";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { AppSettings } from "../types";
@@ -61,6 +62,16 @@ export default function IdleDetectionSection({ settings, update }: Props) {
           />
         </SettingsRow>
 
+        <SettingsRow label={t("idle.statsRetention")} description={t("idle.statsRetentionDescription")}>
+          <NumberInput
+            value={settings.idleStatsRetentionDays}
+            onChange={(v) => update("idleStatsRetentionDays", v)}
+            min={1}
+            max={365}
+            suffix={t("idle.statsDays")}
+          />
+        </SettingsRow>
+
         <SettingsRow label={t("idle.whenIdle")} description={t("idle.whenIdleDescription")}>
           <Select
             value={settings.idleAction}
@@ -120,6 +131,7 @@ export default function IdleDetectionSection({ settings, update }: Props) {
           </button>
         </SettingsRow>
       </SettingsList>
+      <IdleStatistics retentionDays={settings.idleStatsRetentionDays} />
     </SettingsPage>
   );
 }

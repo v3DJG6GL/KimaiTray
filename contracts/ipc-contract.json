@@ -16,6 +16,7 @@
     "trayColors",
     "enableIdleDetection",
     "idleThresholdMinutes",
+    "idleStatsRetentionDays",
     "idleAction",
     "showIdleNotification",
     "stopTimerOnScreensaver",

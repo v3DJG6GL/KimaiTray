@@ -231,6 +231,30 @@ describe("appearance synchronization", () => {
     unmount();
   });
 
+  it.each([0, Number.NaN])("ignores invalid display scale %s", async (scale) => {
+    vi.useFakeTimers();
+    mocks.scaleFactor.mockResolvedValue(scale);
+    const { unmount } = renderHook(() => useAppearance());
+    await act(async () => Promise.resolve());
+    act(() => mocks.resizeListener?.({ payload: { width: 1400, height: 1600 } }));
+    await act(async () => vi.advanceTimersByTime(250));
+    expect(mocks.patchSettings).not.toHaveBeenCalled();
+    unmount();
+  });
+
+  it("does not persist duplicate resize events after dimensions settle", async () => {
+    vi.useFakeTimers();
+    const { unmount } = renderHook(() => useAppearance());
+    await act(async () => Promise.resolve());
+    act(() => mocks.resizeListener?.({ payload: { width: 1400, height: 1600 } }));
+    await act(async () => vi.advanceTimersByTime(250));
+    expect(mocks.patchSettings).toHaveBeenCalledExactlyOnceWith({ popupWidth: 700, popupHeight: 800 });
+    act(() => mocks.resizeListener?.({ payload: { width: 1400, height: 1600 } }));
+    await act(async () => vi.advanceTimersByTime(250));
+    expect(mocks.patchSettings).toHaveBeenCalledTimes(1);
+    unmount();
+  });
+
   it("bounds horizontal resizing and saves the last complete size", async () => {
     vi.useFakeTimers();
     const { unmount } = renderHook(() => useAppearance());

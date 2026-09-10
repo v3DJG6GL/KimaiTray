@@ -1,5 +1,6 @@
 mod http;
 mod idle;
+mod idle_stats;
 mod keychain;
 mod platform;
 mod shortcuts;
@@ -220,6 +221,7 @@ pub fn run() {
             tray::set_popup_monitor,
             tray::open_kimai_in_browser,
             idle::get_idle_seconds,
+            idle_stats::get_idle_stats,
             shortcuts::register_shortcuts,
             store::mutate_scoped_store,
             store::mutate_array_store,
@@ -235,6 +237,7 @@ pub fn run() {
             );
             // Must run before tray/shortcuts read the store.
             migrate_legacy_data(app.handle());
+            idle_stats::start(app.handle().clone());
             tray::create_tray(app.handle())?;
             info!("System tray created");
 

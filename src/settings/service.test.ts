@@ -22,6 +22,12 @@ vi.mock("../api/storeMigrations", () => ({ migrateLegacyStore: storeMocks.migrat
 import { defaultSettings, loadSettings, mergeSettings, onSettingsChange, patchSettings } from "./service";
 
 describe("settings schema defaults", () => {
+  it("defaults idle retention to 30 days and bounds it to 1–365 days", () => {
+    expect(mergeSettings({}).idleStatsRetentionDays).toBe(30);
+    expect(mergeSettings({ idleStatsRetentionDays: 0 }).idleStatsRetentionDays).toBe(1);
+    expect(mergeSettings({ idleStatsRetentionDays: 999 }).idleStatsRetentionDays).toBe(365);
+    expect(mergeSettings({ idleStatsRetentionDays: 7 }).idleStatsRetentionDays).toBe(7);
+  });
   beforeEach(() => {
     vi.resetAllMocks();
     storeMocks.load.mockResolvedValue({
