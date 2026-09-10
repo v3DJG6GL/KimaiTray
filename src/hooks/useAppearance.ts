@@ -121,40 +121,44 @@ export function useAppearance() {
     let active = true;
     let currentSettings: AppSettings | null = null;
     let resizeTimer: ReturnType<typeof setTimeout> | null = null;
-    let pendingSize: Pick<AppSettings, "popupWidth" | "popupHeight"> | null = null;
+    let resizeGeneration = 0;
     let removeResizeListener: (() => void) | null = null;
     const currentWindow = getCurrentWindow();
     const resizeListener =
       document.documentElement.dataset.window === "tray-popup"
-        ? currentWindow.scaleFactor().then((nativeScale) =>
-            currentWindow.onResized(({ payload }) => {
-              const settings = currentSettings;
-              if (!settings || settings.displayMode === "detached") return;
+        ? currentWindow.onResized(({ payload }) => {
+            const generation = ++resizeGeneration;
+            if (resizeTimer) clearTimeout(resizeTimer);
+            const settings = currentSettings;
+            if (!active || !settings || settings.displayMode === "detached") return;
 
-              const scale = UI_SIZE_SCALE[settings.uiSize];
-              const nextWidth = Math.min(
-                POPUP_MAX_WIDTH,
-                Math.max(POPUP_MIN_WIDTH, Math.round(payload.width / nativeScale / scale)),
-              );
-              const nextHeight = Math.min(
-                POPUP_MAX_HEIGHT,
-                Math.max(
-                  POPUP_MIN_HEIGHT,
-                  Math.round(payload.height / nativeScale / scale),
-                ),
-              );
-              if (nextWidth === settings.popupWidth && nextHeight === settings.popupHeight) return;
+            resizeTimer = setTimeout(() => {
+              // Read the current monitor's DPI after resizing settles, rather
+              // than retaining the scale factor from when the hook mounted.
+              void currentWindow.scaleFactor().then((nativeScale) => {
+                if (!active || generation !== resizeGeneration
+                  || currentSettings?.displayMode === "detached"
+                  || currentSettings?.uiSize !== settings.uiSize) return;
+                if (!Number.isFinite(nativeScale) || nativeScale <= 0) return;
 
-              pendingSize = { popupWidth: nextWidth, popupHeight: nextHeight };
-              currentSettings = { ...settings, ...pendingSize };
-              if (resizeTimer) clearTimeout(resizeTimer);
-              resizeTimer = setTimeout(() => {
-                const size = pendingSize!;
-                pendingSize = null;
-                void patchSettings(size).catch(() => {});
-              }, 250);
-            }),
-          )
+                const scale = UI_SIZE_SCALE[settings.uiSize];
+                const nextWidth = Math.min(
+                  POPUP_MAX_WIDTH,
+                  Math.max(POPUP_MIN_WIDTH, Math.round(payload.width / nativeScale / scale)),
+                );
+                const nextHeight = Math.min(
+                  POPUP_MAX_HEIGHT,
+                  Math.max(POPUP_MIN_HEIGHT, Math.round(payload.height / nativeScale / scale)),
+                );
+                if (nextWidth === currentSettings.popupWidth
+                  && nextHeight === currentSettings.popupHeight) return;
+
+                const size = { popupWidth: nextWidth, popupHeight: nextHeight };
+                currentSettings = { ...currentSettings, ...size };
+                return patchSettings(size);
+              }).catch(() => {});
+            }, 250);
+          })
         : Promise.resolve<() => void>(() => {});
 
     const applyCurrent = (settings: AppSettings) => {
@@ -174,7 +178,6 @@ export function useAppearance() {
       active = false;
       if (resizeTimer) clearTimeout(resizeTimer);
       if (removeResizeListener) removeResizeListener();
-      else void resizeListener.then((cleanupResize) => cleanupResize());
       cleanup.then((fn) => fn());
       if (mediaCleanup) {
         mediaCleanup();

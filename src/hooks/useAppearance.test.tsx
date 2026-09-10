@@ -247,6 +247,51 @@ describe("appearance synchronization", () => {
     unmount();
   });
 
+  it.each([
+    [2, 1, "default", 700, 640, 700, 640],
+    [1, 2, "default", 1400, 1280, 700, 640],
+    [2, 1.5, "scale130", 1365, 1248, 700, 640],
+  ] as const)("uses current DPI after %s → %s with UI scale %s", async (
+    initialDpi, nextDpi, uiSize, width, height, popupWidth, popupHeight,
+  ) => {
+    vi.useFakeTimers();
+    mocks.scaleFactor.mockResolvedValue(initialDpi);
+    mocks.loadSettings.mockResolvedValue(settings({ uiSize }));
+    const { unmount } = renderHook(() => useAppearance());
+    await act(async () => Promise.resolve());
+    // Resize once on the initial display, then switch monitors without remounting.
+    act(() => mocks.resizeListener?.({ payload: { width: 1000, height: 1280 } }));
+    await act(async () => vi.advanceTimersByTime(250));
+    mocks.patchSettings.mockClear();
+    mocks.scaleFactor.mockResolvedValue(nextDpi);
+    act(() => mocks.resizeListener?.({ payload: { width, height } }));
+    await act(async () => vi.advanceTimersByTime(250));
+    expect(mocks.patchSettings).toHaveBeenCalledExactlyOnceWith({ popupWidth, popupHeight });
+    unmount();
+  });
+
+  it("ignores stale DPI responses and responses after unmount", async () => {
+    vi.useFakeTimers();
+    const { unmount } = renderHook(() => useAppearance());
+    await act(async () => Promise.resolve());
+    let resolveScale!: (scale: number) => void;
+    mocks.scaleFactor.mockReturnValueOnce(new Promise((resolve) => { resolveScale = resolve; }));
+    act(() => mocks.resizeListener?.({ payload: { width: 1000, height: 1280 } }));
+    await act(async () => vi.advanceTimersByTime(250));
+    act(() => mocks.resizeListener?.({ payload: { width: 1400, height: 1280 } }));
+    await act(async () => resolveScale(2));
+    expect(mocks.patchSettings).not.toHaveBeenCalled();
+    await act(async () => vi.advanceTimersByTime(250));
+    expect(mocks.patchSettings).toHaveBeenCalledExactlyOnceWith({ popupWidth: 700, popupHeight: 640 });
+
+    mocks.scaleFactor.mockReturnValueOnce(new Promise((resolve) => { resolveScale = resolve; }));
+    act(() => mocks.resizeListener?.({ payload: { width: 1600, height: 1280 } }));
+    await act(async () => vi.advanceTimersByTime(250));
+    unmount();
+    await act(async () => resolveScale(2));
+    expect(mocks.patchSettings).toHaveBeenCalledTimes(1);
+  });
+
   it("cleans up listeners that resolve after unmount and ignores late settings", async () => {
     let resolveResize!: (cleanup: () => void) => void;
     mocks.onResized.mockReturnValueOnce(new Promise((resolve) => { resolveResize = resolve; }));
@@ -259,7 +304,7 @@ describe("appearance synchronization", () => {
       resolveResize(mocks.resizeCleanup);
       resolveSettings(settings({ accentStyle: "red" }));
     });
-    expect(mocks.resizeCleanup).toHaveBeenCalledTimes(2);
+    expect(mocks.resizeCleanup).toHaveBeenCalledOnce();
     expect(document.documentElement.dataset.accent).not.toBe("red");
   });
 });
