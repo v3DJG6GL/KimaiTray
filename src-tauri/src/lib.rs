@@ -4,6 +4,8 @@ mod idle_stats;
 #[cfg(target_os = "linux")]
 mod kde;
 mod keychain;
+#[cfg(target_os = "linux")]
+mod linux_command;
 mod platform;
 mod shortcuts;
 mod store;

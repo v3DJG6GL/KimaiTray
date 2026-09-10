@@ -151,46 +151,13 @@ mod platform {
 
 #[cfg(target_os = "linux")]
 mod platform {
-    use std::io::Read;
-    use std::process::{Command, Stdio};
+    use std::process::Command;
     use std::time::{Duration, Instant};
 
     fn command_output(program: &str, args: &[&str]) -> Result<String, String> {
-        let mut child = Command::new(program)
-            .args(args)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .map_err(|_| format!("{program} is unavailable"))?;
-        let deadline = Instant::now() + Duration::from_secs(2);
-        loop {
-            match child.try_wait() {
-                Ok(Some(status)) => {
-                    let mut stdout = String::new();
-                    if let Some(mut pipe) = child.stdout.take() {
-                        let _ = pipe.read_to_string(&mut stdout);
-                    }
-                    return if status.success() {
-                        Ok(stdout)
-                    } else {
-                        Err(format!("{program} failed"))
-                    };
-                }
-                Ok(None) if Instant::now() < deadline => {
-                    std::thread::sleep(Duration::from_millis(25));
-                }
-                Ok(None) => {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return Err(format!("{program} timed out"));
-                }
-                Err(_) => {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return Err(format!("{program} status failed"));
-                }
-            }
-        }
+        let mut command = Command::new(program);
+        command.args(args);
+        crate::linux_command::run(command, Instant::now() + Duration::from_secs(2), true)
     }
 
     fn parse_milliseconds(output: &str) -> Option<u64> {
