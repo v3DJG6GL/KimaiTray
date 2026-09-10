@@ -317,7 +317,6 @@ xattr -cr /Applications/KimaiTray.app
 ```sh
 chmod +x KimaiTray_*.AppImage
 ```
-If using Wayland, the tray icon may require an AppIndicator extension.
 
 **Windows: WebView2 missing**
 The NSIS installer bundles a WebView2 bootstrapper. If you built manually, install [WebView2 Runtime](https://developer.microsoft.com/en-us/microsoft-edge/webview2/).
@@ -331,6 +330,17 @@ D-Bus API on Wayland. Install `xprintidle` when using X11:
 ```sh
 sudo apt install xprintidle
 ```
+
+### Linux: Tray Icon
+
+- KimaiTray uses AppIndicator in **Wayland** sessions.
+- **GNOME** _may_ need an AppIndicator extension to display the tray icon.
+- **Cinnamon**, **Xfce** and **MATE** use legacy GTK tray icons under **X11**.
+
+#### Wayland AppIndicator
+
+- Tauri does not expose direct left/right clicks on tray icons. Therefore, left/right click both open the tray menu.
+- As a workaround, **middle-click** opens the KimaiTray popup/window.
 
 ## License
 
